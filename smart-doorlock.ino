@@ -46,6 +46,7 @@ int maxPot = 13700;
 int potValOld = 0;
 int sum = 0;
 int i = 0;
+boolean flag = false;
 
 
 //onboard led
@@ -115,6 +116,15 @@ void setup() {
 
 
 void loop() {
+  
+  if (flag){
+    //leds[0] = CRGB::Blue; FastLED.show();
+    sendData();
+    flag = false;
+    sum = 0;
+    i = 0;
+  }
+  
   if(millis() >= keepAlive + 600000){  //if no messages are recieved in 10min - restart esp
     ESP.restart();
     keepAlive = millis();
@@ -124,15 +134,16 @@ void loop() {
   sum = sum + x;
   i++;
   if(millis() >= mesure + 500){ //every 0.5s
+    //leds[0] = CRGB::Green; FastLED.show();
     potVal = sum / i;
     i = 0;
     sum = 0;
     stepper.setCurrentPosition(map(potVal, 4095, 0, 0, maxPot));
     if (potVal < potValOld - 30 || potVal > potValOld + 30){
       sendData();
-      leds[0] = CRGB::Green; FastLED.show();
+      
     }
-    sendData();
+    //sendData();
     potValOld = potVal;
     mesure = millis();
   }
@@ -148,13 +159,11 @@ void loop() {
 
 void sendData(){
   // Construct the STOMP message
-  webSocket.loop();
   SudoJSON json;
   int position = stepper.currentPosition();
   json.addPair("position", position);
   // Send the message to the STOMP server
   stomper.sendMessage("/app/doorlock", json.retrive());   //this is the @SendTo anotation
-  webSocket.loop();
 }
 
 void getData(String input){
@@ -164,13 +173,22 @@ void getData(String input){
 }
 
 
-void mapPos() {
+void moveToPos(int pos) {
+  //leds[0] = CRGB::Red; FastLED.show();
+  digitalWrite(EN_PIN, LOW); //enable stepper
   int potVal = analogRead(POT_PIN);  // Reads 0 - 4095 on ESP32
   stepper.setCurrentPosition(map(potVal, 4095, 0, 0, maxPot));  //map(value, fromLow, fromHigh, toLow, toHigh)
-  if (potVal < potValOld - 30 || potVal > potValOld + 30){
-    sendData();
+  stepper.moveTo(pos); //set desired move: number of stepps  // 6 full rotations, 1600 1 rotation
+  while (stepper.currentPosition() != pos){ //returns the current position...
+    stepper.run(); //makes 1 step
   }
-  potValOld = potVal;
+  potVal = analogRead(POT_PIN);
+  stepper.setCurrentPosition(map(potVal, 4095, 0, 0, maxPot));
+  if (stepper.currentPosition() < pos - 50 || stepper.currentPosition() > pos + 50) {
+    moveToPos(pos);
+  }
+  digitalWrite(EN_PIN, HIGH); // disable stepper
+  flag = true;
 }
 
 void calibrate() {
@@ -190,27 +208,6 @@ void calibrate() {
   }
   maxPot = stepper.currentPosition();
   digitalWrite(EN_PIN, HIGH);
-}
-
-void moveToPos(int pos) {
-  leds[0] = CRGB::Red; FastLED.show();
-  digitalWrite(EN_PIN, LOW); //enable stepper
-  //mapPos();
-  //----
-  int potVal = analogRead(POT_PIN);  // Reads 0 - 4095 on ESP32
-  stepper.setCurrentPosition(map(potVal, 4095, 0, 0, maxPot));  //map(value, fromLow, fromHigh, toLow, toHigh)
-  //----
-  stepper.moveTo(pos); //set desired move: number of stepps  // 6 full rotations, 1600 1 rotation
-  while (stepper.currentPosition() != pos){ //returns the current position...
-    stepper.run(); //makes 1 step
-    webSocket.loop();
-  }/*
-  mapPos();
-  if (stepper.currentPosition() < pos - 50 || stepper.currentPosition() > pos + 50) {
-    moveToPos(pos);
-  }
-  */
-  digitalWrite(EN_PIN, HIGH); // disable stepper
 }
 
 
