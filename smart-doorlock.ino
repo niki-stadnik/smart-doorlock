@@ -48,9 +48,20 @@ int sum = 0;
 int i = 0;
 
 
+//onboard led
+#include <FastLED.h>
+#define NUM_LEDS 1
+#define DATA_PIN 48
+CRGB leds[NUM_LEDS];
 
 
 void setup() {
+
+  //onboard led
+  FastLED.addLeds<NEOPIXEL, DATA_PIN>(leds, NUM_LEDS);
+
+
+
   WiFi.begin(wlan_ssid, wlan_password);
   while (WiFi.status() != WL_CONNECTED) {
     delay(500);
@@ -119,6 +130,7 @@ void loop() {
     stepper.setCurrentPosition(map(potVal, 4095, 0, 0, maxPot));
     if (potVal < potValOld - 30 || potVal > potValOld + 30){
       sendData();
+      leds[0] = CRGB::Green; FastLED.show();
     }
     sendData();
     potValOld = potVal;
@@ -136,11 +148,13 @@ void loop() {
 
 void sendData(){
   // Construct the STOMP message
+  webSocket.loop();
   SudoJSON json;
   int position = stepper.currentPosition();
   json.addPair("position", position);
   // Send the message to the STOMP server
   stomper.sendMessage("/app/doorlock", json.retrive());   //this is the @SendTo anotation
+  webSocket.loop();
 }
 
 void getData(String input){
@@ -179,19 +193,24 @@ void calibrate() {
 }
 
 void moveToPos(int pos) {
+  leds[0] = CRGB::Red; FastLED.show();
   digitalWrite(EN_PIN, LOW); //enable stepper
-  mapPos();
+  //mapPos();
+  //----
+  int potVal = analogRead(POT_PIN);  // Reads 0 - 4095 on ESP32
+  stepper.setCurrentPosition(map(potVal, 4095, 0, 0, maxPot));  //map(value, fromLow, fromHigh, toLow, toHigh)
+  //----
   stepper.moveTo(pos); //set desired move: number of stepps  // 6 full rotations, 1600 1 rotation
   while (stepper.currentPosition() != pos){ //returns the current position...
     stepper.run(); //makes 1 step
-  }
+    webSocket.loop();
+  }/*
   mapPos();
   if (stepper.currentPosition() < pos - 50 || stepper.currentPosition() > pos + 50) {
     moveToPos(pos);
   }
+  */
   digitalWrite(EN_PIN, HIGH); // disable stepper
-  //delay(200);
-  //sendData();
 }
 
 
