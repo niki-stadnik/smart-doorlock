@@ -3,6 +3,27 @@
 #include "WebSocketsClient.h"
 #include "StompClient.h"
 #include "SudoJSON.h"
+#include <ArduinoOTA.h>
+
+#define NAME "smart-doorlock"
+/*
+ESP32S3 Dev Module
+Tools → Partition Scheme → Minimal SPIFFS (1.9MB APP with OTA/190KB SPIFFS)
+Tools → Flash Size → confirm 4MB
+*/
+
+//debug
+#define DEBUG 0 //1 = debug messages ON; 0 = debug messages OFF
+
+#if DEBUG == 1
+#define debugStart(x) Serial.begin(x)
+#define debug(x) Serial.print(x)
+#define debugln(x) Serial.println(x)
+#else
+#define debugStart(x)
+#define debug(x)
+#define debugln(x)
+#endif
 
 #include "config.h"
 const char* wlan_ssid = WIFI;
@@ -24,8 +45,11 @@ unsigned long mesure = 0;
 #include <TMCStepper.h>
 #include <AccelStepper.h>
 
+
+
 //the potentiometer pin is the middle of the pins. the other 2 are connected to vcc and gnd
 
+#define DOOR_PIN 13
 #define POT_PIN 4
 #define EN_PIN 2
 #define DIR_PIN 6
@@ -57,16 +81,93 @@ CRGB leds[NUM_LEDS];
 
 
 void setup() {
+  // setup serial
+  debugStart(115200);
+  // flush it - ESP Serial seems to start with rubbish
+  debugln();
 
-  //onboard led
+  pinMode(EN_PIN, OUTPUT);
+  digitalWrite(EN_PIN, HIGH);
+
+  pinMode(DOOR_PIN, INPUT_PULLUP);
+
+
+  // --- TMC2209 Init ---
+  Serial1.begin(115200, SERIAL_8N1, UART_RX, UART_TX); // RX=-1 disables receive
+  delay(100);
+  driver.begin();
+  delay(100);
+  driver.toff(5);
+  delay(100);
+  driver.tbl(2); 
+  delay(100);
+  driver.rms_current(4000);       // Set motor current in mA (motor is rated for 4.1V 1A so 4.1W - at 12V that is 0.34A but for short bursts its ok)
+  driver.microsteps(8); //8 default
+  delay(100);
+  //driver.en_spreadCycle(false);  // Use stealthChop //default false, to be silent
+  //delay(100);
+    /*It enables or disables the SpreadCycle PWM mode on the TMC2209 stepper driver.
+    SpreadCycle is a PWM current control mode designed for high torque and performance.
+    The alternative mode is stealthChop, optimized for quiet and smooth operation.*/
+  driver.pwm_autoscale(true);
+  delay(100);
+    /*PWM Auto Scale is a feature that automatically adjusts the PWM amplitude to keep the motor current within desired limits.
+    It monitors the back-EMF and adjusts the PWM duty cycle accordingly to maintain smooth current control.
+    This helps prevent motor stalls and improves torque consistency, especially at low speeds.*/
+  driver.pwm_autograd(true);           // Disable smoothing
+  delay(100);
+    /*It stands for PWM Auto Gradient.
+    It is a feature of the TMC2209’s stealthChop mode.
+    It automatically adjusts the PWM gradient to optimize motor noise and torque.*/
+  
+  // --- AccelStepper Init ---
+  stepper.setMaxSpeed(1000);
+  stepper.setAcceleration(9000);
+  stepper.setCurrentPosition(0);
+  //calibrate(); //mesured as 13000 //pot = steps ; 4095 = 0 ; 0 = 13000
+  stepper.setSpeed(9000);
+
+
+
+//onboard led
   FastLED.addLeds<NEOPIXEL, DATA_PIN>(leds, NUM_LEDS);
 
 
 
+  // connect to WiFi
+  debugln("Logging into WLAN: " + String(wlan_ssid));
+  debug(" ...");
   WiFi.begin(wlan_ssid, wlan_password);
+  int i = 0;
   while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
+    i++;
+    delay(200);
+    debug(".");
+    if (i >= 25) ESP.restart(); // 5s / 200ms = 25
   }
+  debugln(" success.");
+  debug("IP: "); debugln(WiFi.localIP());
+  
+  //OTA upload
+  ArduinoOTA.setHostname(NAME); // shows up with this name
+  ArduinoOTA.setPassword("admin"); // optional security
+  ArduinoOTA.onStart([]() {
+    debugln("OTA update starting...");
+  });
+  ArduinoOTA.onEnd([]() {
+    debugln("\nOTA update complete!");
+  });
+  ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
+    debugln("Progress: " + (progress / (total / 100)));
+  });
+  ArduinoOTA.onError([](ota_error_t error) {
+    debugln("Error" + error);
+  });
+
+  ArduinoOTA.begin();
+  debugln("OTA ready");
+
+
   stomper.onConnect(subscribe);
   stomper.onError(error);
   // Start the StompClient
@@ -75,47 +176,10 @@ void setup() {
   } else {
     stomper.begin();
   }
-
-
-  pinMode(EN_PIN, OUTPUT);
-  digitalWrite(EN_PIN, HIGH);
-
-
-  // --- TMC2209 Init ---
-  Serial1.begin(115200, SERIAL_8N1, UART_RX, UART_TX); // RX=-1 disables receive
-  driver.begin();
-  driver.toff(5);
-  driver.tbl(1); 
-  driver.rms_current(1500);       // Set motor current in mA (motor is rated for 4.1V 1A so 4.1W - at 12V that is 0.34A but for short bursts its ok)
-  driver.microsteps(8);
-  driver.en_spreadCycle(false);  // Use stealthChop
-    /*It enables or disables the SpreadCycle PWM mode on the TMC2209 stepper driver.
-    SpreadCycle is a PWM current control mode designed for high torque and performance.
-    The alternative mode is stealthChop, optimized for quiet and smooth operation.*/
-  driver.pwm_autoscale(true);
-    /*PWM Auto Scale is a feature that automatically adjusts the PWM amplitude to keep the motor current within desired limits.
-    It monitors the back-EMF and adjusts the PWM duty cycle accordingly to maintain smooth current control.
-    This helps prevent motor stalls and improves torque consistency, especially at low speeds.*/
-  driver.pwm_autograd(true);           // Disable smoothing
-    /*It stands for PWM Auto Gradient.
-    It is a feature of the TMC2209’s stealthChop mode.
-    It automatically adjusts the PWM gradient to optimize motor noise and torque.*/
-
-  // --- AccelStepper Init ---
-  stepper.setMaxSpeed(9000);
-  stepper.setAcceleration(9000);
-  stepper.setCurrentPosition(0);
-
- 
-  //calibrate(); //mesured as 13000 //pot = steps ; 4095 = 0 ; 0 = 13000
-
-
-  stepper.setSpeed(9000);
 }
 
-
-
 void loop() {
+  ArduinoOTA.handle();
   
   if (flag){
     //leds[0] = CRGB::Blue; FastLED.show();
@@ -139,19 +203,10 @@ void loop() {
     i = 0;
     sum = 0;
     stepper.setCurrentPosition(map(potVal, 4095, 0, 0, maxPot));
-    if (potVal < potValOld - 30 || potVal > potValOld + 30){
-      sendData();
-      
-    }
-    //sendData();
+    sendData();
+    debugln(potVal);
     potValOld = potVal;
     mesure = millis();
-  }
-  
-
-  if(millis() >= sendtimeing + 60000){  //every minute
-    sendData();  
-    sendtimeing = millis();
   }
 
   webSocket.loop();
@@ -161,36 +216,81 @@ void sendData(){
   // Construct the STOMP message
   SudoJSON json;
   int position = stepper.currentPosition();
+  int door = digitalRead(DOOR_PIN);
   json.addPair("position", position);
+  json.addPair("door", door);
   // Send the message to the STOMP server
+  //stomper.sendMessage("/app/device/doorlock", json.retrive());   //this is the @SendTo anotation
   stomper.sendMessage("/app/doorlock", json.retrive());   //this is the @SendTo anotation
+  debugln("sent");
 }
 
 void getData(String input){
   SudoJSON json = SudoJSON(input);
   int move = json.getPairI("move");
-  moveToPos(move);
+  int acc = json.getPairI("acc");
+  int minSpeed = json.getPairI("minSpeed");
+  int maxSpeed = json.getPairI("maxSpeed");
+  int i11 = json.getPairI("i11");
+  int i12 = json.getPairI("i12");
+  int i21 = json.getPairI("i21");
+  int i22 = json.getPairI("i22");
+  int i31 = json.getPairI("i31");
+  int i32 = json.getPairI("i32");
+  moveToPos(move, acc, minSpeed, maxSpeed, i11, i12, i21, i22, i31, i32);
 }
 
-
-void moveToPos(int pos) {
+void moveToPos(int pos, int acc, int minSpeed, int maxSpeed, int i11, int i12, int i21, int i22, int i31, int i32) {
+//void moveToPos(int pos) {
   //leds[0] = CRGB::Red; FastLED.show();
+  stepper.setAcceleration(acc);
   digitalWrite(EN_PIN, LOW); //enable stepper
-  int potVal = analogRead(POT_PIN);  // Reads 0 - 4095 on ESP32
-  stepper.setCurrentPosition(map(potVal, 4095, 0, 0, maxPot));  //map(value, fromLow, fromHigh, toLow, toHigh)
+  int potVal = analogRead(POT_PIN); // Reads 0 - 4095 on ESP32
+  stepper.setCurrentPosition(map(potVal, 4095, 0, 0, maxPot)); //map(value, fromLow, fromHigh, toLow, toHigh)
   stepper.moveTo(pos); //set desired move: number of stepps  // 6 full rotations, 1600 1 rotation
-  while (stepper.currentPosition() != pos){ //returns the current position...
-    stepper.run(); //makes 1 step
+
+  unsigned long lastProgressTime = millis();
+  long lastPosition = stepper.currentPosition();
+
+  while (stepper.currentPosition() != pos) {
+    long currentPos = stepper.currentPosition();
+
+    // --- Variable speed zones ---
+    if ((currentPos >= i11 && currentPos <= i12) ||
+        (currentPos >= i21 && currentPos <= i22) ||
+        (currentPos >= i31 && currentPos <= i32)) {
+      stepper.setMaxSpeed(minSpeed);
+    } else {
+      stepper.setMaxSpeed(maxSpeed);
+    }
+
+    stepper.run();  //makes 1 step
+
+    // --- Stall detection ---
+    if (currentPos != lastPosition) {
+      // motor moved, reset the timer
+      lastPosition = currentPos;
+      lastProgressTime = millis();
+    } else {
+      // motor hasn't moved since last check
+      if (millis() - lastProgressTime >= 2000) {
+        // stalled for 2 seconds straight - abort
+        digitalWrite(EN_PIN, HIGH); // disable stepper
+        flag = true;
+        return;
+      }
+    }
   }
+
   potVal = analogRead(POT_PIN);
   stepper.setCurrentPosition(map(potVal, 4095, 0, 0, maxPot));
   if (stepper.currentPosition() < pos - 50 || stepper.currentPosition() > pos + 50) {
-    moveToPos(pos);
+    moveToPos(pos, acc, minSpeed, maxSpeed, i11, i12, i21, i22, i31, i32);
   }
   digitalWrite(EN_PIN, HIGH); // disable stepper
   flag = true;
 }
-
+/*
 void calibrate() {
   digitalWrite(EN_PIN, LOW);
   stepper.setSpeed(-5000);
@@ -209,7 +309,7 @@ void calibrate() {
   maxPot = stepper.currentPosition();
   digitalWrite(EN_PIN, HIGH);
 }
-
+*/
 
 /*
 обороти за врата мотор 
