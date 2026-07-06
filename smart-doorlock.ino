@@ -216,7 +216,7 @@ void sendData(){
   // Construct the STOMP message
   SudoJSON json;
   int position = stepper.currentPosition();
-  int door = digitalRead(DOOR_PIN);
+  boolean door = digitalRead(DOOR_PIN);
   json.addPair("position", position);
   json.addPair("door", door);
   // Send the message to the STOMP server
