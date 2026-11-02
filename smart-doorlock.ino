@@ -73,13 +73,6 @@ int i = 0;
 boolean flag = false;
 
 
-//onboard led
-#include <FastLED.h>
-#define NUM_LEDS 1
-#define DATA_PIN 48
-CRGB leds[NUM_LEDS];
-
-
 void setup() {
   // setup serial
   debugStart(115200);
@@ -126,12 +119,6 @@ void setup() {
   stepper.setCurrentPosition(0);
   //calibrate(); //mesured as 13000 //pot = steps ; 4095 = 0 ; 0 = 13000
   stepper.setSpeed(9000);
-
-
-
-//onboard led
-  FastLED.addLeds<NEOPIXEL, DATA_PIN>(leds, NUM_LEDS);
-
 
 
   // connect to WiFi
@@ -182,7 +169,6 @@ void loop() {
   ArduinoOTA.handle();
   
   if (flag){
-    //leds[0] = CRGB::Blue; FastLED.show();
     sendData();
     flag = false;
     sum = 0;
@@ -198,7 +184,6 @@ void loop() {
   sum = sum + x;
   i++;
   if(millis() >= mesure + 500){ //every 0.5s
-    //leds[0] = CRGB::Green; FastLED.show();
     potVal = sum / i;
     i = 0;
     sum = 0;
@@ -220,8 +205,7 @@ void sendData(){
   json.addPair("position", position);
   json.addPair("door", door);
   // Send the message to the STOMP server
-  //stomper.sendMessage("/app/device/doorlock", json.retrive());   //this is the @SendTo anotation
-  stomper.sendMessage("/app/doorlock", json.retrive());   //this is the @SendTo anotation
+  stomper.sendMessage("/app/device/doorlock", json.retrive());   //this is the @SendTo anotation
   debugln("sent");
 }
 
@@ -240,15 +224,7 @@ void getData(String input){
   moveToPos(move, acc, minSpeed, maxSpeed, i11, i12, i21, i22, i31, i32);
 }
 
-void moveToPos(int pos, int acc, int minSpeed, int maxSpeed, int i11, int i12, int i21, int i22, int i31, int i32) {
-//void moveToPos(int pos) {
-  //leds[0] = CRGB::Red; FastLED.show();
-  stepper.setAcceleration(acc);
-  digitalWrite(EN_PIN, LOW); //enable stepper
-  int potVal = analogRead(POT_PIN); // Reads 0 - 4095 on ESP32
-  stepper.setCurrentPosition(map(potVal, 4095, 0, 0, maxPot)); //map(value, fromLow, fromHigh, toLow, toHigh)
-  stepper.moveTo(pos); //set desired move: number of stepps  // 6 full rotations, 1600 1 rotation
-
+void move(int pos, int acc, int minSpeed, int maxSpeed, int i11, int i12, int i21, int i22, int i31, int i32){
   unsigned long lastProgressTime = millis();
   long lastPosition = stepper.currentPosition();
 
@@ -281,15 +257,67 @@ void moveToPos(int pos, int acc, int minSpeed, int maxSpeed, int i11, int i12, i
       }
     }
   }
+}
 
-  potVal = analogRead(POT_PIN);
-  stepper.setCurrentPosition(map(potVal, 4095, 0, 0, maxPot));
-  if (stepper.currentPosition() < pos - 50 || stepper.currentPosition() > pos + 50) {
+void moveToPos(int pos, int acc, int minSpeed, int maxSpeed, int i11, int i12, int i21, int i22, int i31, int i32) {
+  int check1 = (i21+i12)/2; //4500 //5600
+  int check2 = (i31+i22)/2; //7800 //8800
+  stepper.setAcceleration(acc);
+  digitalWrite(EN_PIN, LOW); //enable stepper
+  setPosAverage();
+
+//nie sme na 2150, iskame da otkluqim na 11000
+//pyrva stypka check1 4500
+//vtora stypjka check2 7800
+//ako zapoqna ot 5000?
+  if (pos > i32){  //unlocking
+    if (stepper.currentPosition() < check1){
+      stepper.moveTo(check1);
+      move(check1, acc, minSpeed, maxSpeed, i11, i12, i21, i22, i31, i32);
+      setPosAverage();
+    }
+    if (stepper.currentPosition() < check2){
+      stepper.moveTo(check2);
+      move(check2, acc, minSpeed, maxSpeed, i11, i12, i21, i22, i31, i32);
+      setPosAverage();
+    }
+  } else if (pos < i11){ //locking
+    if (stepper.currentPosition() > check2){
+      stepper.moveTo(check2);
+      move(check2, acc, minSpeed, maxSpeed, i11, i12, i21, i22, i31, i32);
+      setPosAverage();
+    }
+    if (stepper.currentPosition() > check1){
+      stepper.moveTo(check1);
+      move(check1, acc, minSpeed, maxSpeed, i11, i12, i21, i22, i31, i32);
+      setPosAverage();
+    }
+  }
+
+  setPosAverage();
+  stepper.moveTo(pos); //set desired move: number of stepps  // 6 full rotations, 1600 1 rotation
+  move(pos, acc, minSpeed, maxSpeed, i11, i12, i21, i22, i31, i32);
+  setPosAverage();
+  
+  if (stepper.currentPosition() < pos - 100 || stepper.currentPosition() > pos + 100) {
     moveToPos(pos, acc, minSpeed, maxSpeed, i11, i12, i21, i22, i31, i32);
   }
   digitalWrite(EN_PIN, HIGH); // disable stepper
   flag = true;
 }
+
+void setPosAverage(){
+  delay(10);
+  int sum = 0;
+  for (int i=0; i<40; i++){
+    potVal = analogRead(POT_PIN);  // Reads 0 - 4095 on ESP32
+    sum = sum + potVal;
+    delayMicroseconds(500); 
+  }
+  int avg = sum / 40;
+  stepper.setCurrentPosition(map(avg, 4095, 0, 0, maxPot));  //map(value, fromLow, fromHigh, toLow, toHigh)
+}
+
 /*
 void calibrate() {
   digitalWrite(EN_PIN, LOW);
