@@ -45,7 +45,7 @@ unsigned long mesure = 0;
 #include <TMCStepper.h>
 #include <AccelStepper.h>
 
-
+String debugString = "";
 
 //the potentiometer pin is the middle of the pins. the other 2 are connected to vcc and gnd
 
@@ -67,8 +67,7 @@ AccelStepper stepper (1, STEP_PIN, DIR_PIN);
 
 int potVal = 0;
 int maxPot = 13700;
-int potValOld = 0;
-int sum = 0;
+uint32_t sum = 0;
 int i = 0;
 boolean flag = false;
 
@@ -117,7 +116,6 @@ void setup() {
   stepper.setMaxSpeed(1000);
   stepper.setAcceleration(9000);
   stepper.setCurrentPosition(0);
-  //calibrate(); //mesured as 13000 //pot = steps ; 4095 = 0 ; 0 = 13000
   stepper.setSpeed(9000);
 
 
@@ -165,6 +163,8 @@ void setup() {
   }
 }
 
+boolean calFlag = true;
+
 void loop() {
   ArduinoOTA.handle();
   
@@ -180,17 +180,21 @@ void loop() {
     keepAlive = millis();
   }
 
-  int x = analogRead(POT_PIN);  // Reads 0 - 4095 on ESP32
-  sum = sum + x;
+  if (calFlag){
+    //calibratePot(1000, 12000, 12); // the value must be 1000 before upload
+    calFlag = false;
+  }
+
+  int x = analogReadMilliVolts(POT_PIN);  // Reads 0 - 4095 on ESP32
+  sum += x;
   i++;
   if(millis() >= mesure + 500){ //every 0.5s
-    potVal = sum / i;
+    float mv = sum / (float)i;
+    stepper.setCurrentPosition(mvToPos(mv));
+    sendData();
     i = 0;
     sum = 0;
-    stepper.setCurrentPosition(map(potVal, 4095, 0, 0, maxPot));
-    sendData();
-    debugln(potVal);
-    potValOld = potVal;
+    debugln(mv);
     mesure = millis();
   }
 
@@ -204,6 +208,7 @@ void sendData(){
   boolean door = digitalRead(DOOR_PIN);
   json.addPair("position", position);
   json.addPair("door", door);
+  json.addPair("debug", debugString.c_str());
   // Send the message to the STOMP server
   stomper.sendMessage("/app/device/doorlock", json.retrive());   //this is the @SendTo anotation
   debugln("sent");
@@ -264,48 +269,51 @@ void moveToPos(int pos, int acc, int minSpeed, int maxSpeed, int i11, int i12, i
   int check2 = (i31+i22)/2; //7800 //8800
   stepper.setAcceleration(acc);
   digitalWrite(EN_PIN, LOW); //enable stepper
-  setPosAverage();
+  //setPosAverage();
+  stepper.setCurrentPosition(mvToPos(readMv()));
 
-//nie sme na 2150, iskame da otkluqim na 11000
-//pyrva stypka check1 4500
-//vtora stypjka check2 7800
-//ako zapoqna ot 5000?
   if (pos > i32){  //unlocking
     if (stepper.currentPosition() < check1){
       stepper.moveTo(check1);
       move(check1, acc, minSpeed, maxSpeed, i11, i12, i21, i22, i31, i32);
-      setPosAverage();
+      //setPosAverage();
+      stepper.setCurrentPosition(mvToPos(readMv()));
     }
     if (stepper.currentPosition() < check2){
       stepper.moveTo(check2);
       move(check2, acc, minSpeed, maxSpeed, i11, i12, i21, i22, i31, i32);
-      setPosAverage();
+      //setPosAverage();
+      stepper.setCurrentPosition(mvToPos(readMv()));
     }
   } else if (pos < i11){ //locking
     if (stepper.currentPosition() > check2){
       stepper.moveTo(check2);
       move(check2, acc, minSpeed, maxSpeed, i11, i12, i21, i22, i31, i32);
-      setPosAverage();
+      //setPosAverage();
+      stepper.setCurrentPosition(mvToPos(readMv()));
     }
     if (stepper.currentPosition() > check1){
       stepper.moveTo(check1);
       move(check1, acc, minSpeed, maxSpeed, i11, i12, i21, i22, i31, i32);
-      setPosAverage();
+      //setPosAverage();
+      stepper.setCurrentPosition(mvToPos(readMv()));
     }
   }
 
-  setPosAverage();
+  //setPosAverage();
+  stepper.setCurrentPosition(mvToPos(readMv()));
   stepper.moveTo(pos); //set desired move: number of stepps  // 6 full rotations, 1600 1 rotation
   move(pos, acc, minSpeed, maxSpeed, i11, i12, i21, i22, i31, i32);
-  setPosAverage();
+  //setPosAverage();
+  stepper.setCurrentPosition(mvToPos(readMv()));
   
-  if (stepper.currentPosition() < pos - 100 || stepper.currentPosition() > pos + 100) {
+  if (stepper.currentPosition() < pos - 50 || stepper.currentPosition() > pos + 50) {
     moveToPos(pos, acc, minSpeed, maxSpeed, i11, i12, i21, i22, i31, i32);
   }
   digitalWrite(EN_PIN, HIGH); // disable stepper
   flag = true;
 }
-
+/*
 void setPosAverage(){
   delay(10);
   int sum = 0;
@@ -316,28 +324,72 @@ void setPosAverage(){
   }
   int avg = sum / 40;
   stepper.setCurrentPosition(map(avg, 4095, 0, 0, maxPot));  //map(value, fromLow, fromHigh, toLow, toHigh)
-}
-
-/*
-void calibrate() {
-  digitalWrite(EN_PIN, LOW);
-  stepper.setSpeed(-5000);
-  while (analogRead(POT_PIN) < 4095) {
-    stepper.runSpeed();
-    delay(10);
-  }
-  stepper.setCurrentPosition(0);
-  delay(1000);
-  stepper.setSpeed(5000);
-  delay(1000);
-  while (analogRead(POT_PIN) > 0){
-    stepper.runSpeed();
-    delay(10);
-  }
-  maxPot = stepper.currentPosition();
-  digitalWrite(EN_PIN, HIGH);
+  //stepper.setCurrentPosition(mvToPos(readMv()));
 }
 */
+
+//calibration function is called from position 1000, and a table is generated in the debug message.
+//tha table is pasted here
+const int CAL_MAX = 16;
+int   calN = 13;
+long  calStart = 1000;
+long  calSteps[CAL_MAX] = {0,1000,2000,3000,4000,5000,6000,7000,8000,9000,10000,11000,12000};
+float calMv[CAL_MAX]    = {3040.6f, 2804.2f, 2536.1f, 2282.8f, 2049.6f,
+                           1804.2f, 1540.9f, 1286.6f, 1036.8f, 803.2f, 562.5f, 324.7f, 105.2f};
+
+long mvToPos(float mv) {
+  int i = 0;
+  while (i < calN - 2 && mv < calMv[i + 1]) i++;       // mV falls as position rises
+  float t = (mv - calMv[i]) / (calMv[i + 1] - calMv[i]);
+  return calStart + lroundf(calSteps[i] + t * (calSteps[i + 1] - calSteps[i]));
+}
+float readMv() {
+  delay(10);                                   // settle
+  uint32_t s = 0;
+  for (int i = 0; i < 30; i++) { s += analogReadMilliVolts(POT_PIN); delayMicroseconds(500); }
+  return s / 30.0;
+}
+void calibratePot(long startPos, long span, int n) {
+  move(1000, 1500, 400, 400, 4250, 4300, 7250, 7300, 10350, 10400);
+  if (n < 2 || n >= CAL_MAX) return;
+  float up[CAL_MAX], down[CAL_MAX];
+  long stepSize = span / n;
+
+  digitalWrite(EN_PIN, LOW);
+  stepper.setMaxSpeed(400);
+  stepper.setAcceleration(1500);
+  stepper.setCurrentPosition(0);                       // relative steps
+
+  for (int k = 0; k <= n; k++) {                       // up pass
+    stepper.runToNewPosition(k * stepSize);
+    up[k] = readMv();
+  }
+  for (int k = n; k >= 0; k--) {                       // down pass
+    stepper.runToNewPosition(k * stepSize);
+    down[k] = readMv();
+  }
+  digitalWrite(EN_PIN, HIGH);
+
+  // average both passes, track the worst disagreement
+  float maxDiff = 0;
+  calN = n + 1;
+  calStart = startPos;
+  for (int k = 0; k <= n; k++) {
+    calSteps[k] = k * stepSize;
+    calMv[k] = (up[k] + down[k]) / 2.0f;
+    float d = fabsf(up[k] - down[k]);
+    if (d > maxDiff) maxDiff = d;
+  }
+  stepper.setCurrentPosition(startPos);                // motor is back at the start
+
+  // paste-ready output, no newlines (safe inside JSON)
+  debugString += String("calN=") + calN + ";calStart=" + calStart + ";steps={";
+  for (int k = 0; k < calN; k++) debugString += String(calSteps[k]) + (k < calN - 1 ? "," : "");
+  debugString += "};mv={";
+  for (int k = 0; k < calN; k++) debugString += String(calMv[k], 1) + "f" + (k < calN - 1 ? "," : "");
+  debugString += String("};maxdiff=") + String(maxDiff, 1) + ";";
+  flag = true;                                         // loop() sends it
+}
 
 /*
 обороти за врата мотор 
